@@ -1,11 +1,11 @@
 {
-  "version": "v1.3.9",
-  "notes": "v1.3.9 is released! Please update to the new version.",
-  "pub_date": "2024-06-28T15:17:30.819Z",
+  "version": "v1.4.0",
+  "notes": "v1.4.0 is released! Please update to the new version.",
+  "pub_date": "2024-06-29T15:30:31.624Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTS2NOV0dxQ0Z6eTF2NVovdHArS2FpZUJXSHZ3YmhiUVM4cHU4ZDBqamdza2RlN0VqYVR0ZDhLQnppUDdzSWlqZDFxNG9xanVlTFFvbWNUcjNabzJ5dUhvZkVLOWVoMndrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzE5NTg3ODUwCWZpbGU6dGlrdG9rLW1hdHJpeF8xLjMuOV94NjRfZW4tVVMubXNpLnppcApvWnZTV1Q4aGcwVXJ1WnZ5OWFjdWJ1SEYrWWJHSnNKUExnb2hxSWJ2UHhnWE5zTzhtT1lkRmVDZEpCdDhsMzM4ZE1heldtdWlBQldHMTljaTlDcDVEQT09Cg==",
-      "url": "https://github.tikmatrix.com/https://github.com/tikmatrix/tiktok-matrix/releases/download/v1.3.9/tiktok-matrix_1.3.9_x64_en-US.msi.zip"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTS2NOV0dxQ0Z6eTRhMXJxUGxYc3BHZWUxcTZBTDJFMzFEb3RwanY5cVkralpMd0prcEJkTCtmazBXWHNvbG5LQVRPZ211T29IT0MrVDRMM3ppSjVLbDVWTWQ2akZ5UWdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzE5Njc1MDMxCWZpbGU6dGlrdG9rLW1hdHJpeF8xLjQuMF94NjRfZW4tVVMubXNpLnppcApHRDdodHY4L3lhY0hjLzhJMUtZZjNLcXMrQ1lPcXVVSDZzaUZLeFBIQS91ZE1RcXd0cndCemhwSkZWaWVKTFQ1a3RXdXVuZUYxdGtjbXZNZEhTa0tEUT09Cg==",
+      "url": "https://github.tikmatrix.com/https://github.com/tikmatrix/tiktok-matrix/releases/download/v1.4.0/tiktok-matrix_1.4.0_x64_en-US.msi.zip"
     }
   }
 }
