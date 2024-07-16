@@ -37,3 +37,8 @@ npm run tauri build
 
 `TDe4ZmkDBPYHVqWpX6jWjf3j45JdipB7Lx`
 ![ustd](usdt.png)
+
+### 后续更新版本
+
+1. 我会发送最新的安装包(xxx.msi),更新包(xxx.zip),签名文件(xxx.sig),更新描述(update.json),下载地址(download.html)
+2. 你把这5个文件上传到网站根目录(同名覆盖),程序启动的时候就会自动弹出更新提示

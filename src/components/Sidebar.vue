@@ -11,7 +11,7 @@
           <div>
             <span class="text-xl text-white font-bold">{{ $t('siteName') }}</span>
             <br>
-            <span class="text-xs text-white font-sans">www.tikmatrix.com</span>
+            <span class="text-xs text-white font-sans">www.tiktokmatrix.com</span>
             <span class="text-xs text-white ml-2">v{{ version }}</span>
           </div>
           <div class="ml-2">
@@ -52,17 +52,17 @@
           </a>
 
           <a class="link link-primary text-xs float-right flex items-center mr-1"
-            href="https://chat.whatsapp.com/G15tFqXqbRGADnggV5OEvg" target="_blank">
+            href="https://chat.whatsapp.com/DZPOoa2BdfBDchLLsxRkyo" target="_blank">
             <font-awesome-icon icon="fab fa-whatsapp" class="text-blue-500 h-4 w-4" />
             {{ $t('whatsapp') }}
           </a>
-          <a class="link link-primary text-xs float-right flex items-center mr-1" href="https://t.me/+iGhozoBfAbI5YmE1"
+          <a class="link link-primary text-xs float-right flex items-center mr-1" href="https://t.me/+iW_mzNhGdHw1YjRl"
             target="_blank">
             <font-awesome-icon icon="fab fa-telegram" class="text-blue-500 h-4 w-4" />
             {{ $t('telegram') }}
           </a>
           <a class="link link-primary text-xs float-right flex items-center mr-1"
-            href="https://www.tikmatrix.com/docs/intro" target="_blank">
+            href="https://www.tiktokmatrix.com/docs/intro" target="_blank">
             <font-awesome-icon icon="fa-solid fa-file-lines" class="text-blue-500 h-4 w-4" />
             {{ $t('document') }}
           </a>
