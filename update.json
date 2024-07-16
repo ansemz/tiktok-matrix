@@ -1,11 +1,11 @@
 {
-  "version": "v1.5.8",
-  "notes": "v1.5.8 is released! Please update to the new version.",
-  "pub_date": "2024-07-15T14:31:57.713Z",
+  "version": "v1.5.9",
+  "notes": "v1.5.9 is released! Please update to the new version.",
+  "pub_date": "2024-07-16T11:26:38.547Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTS2NOV0dxQ0Z6eTB4OHEzSGNsRm1OU0Q3VWtaZDJaQzNWYlpJODR2eTZRMDNIRWRlSk41bU10RXdLOElWTm1KVzRPRldhMFlBb3QvUnRkVmlVNHd4NmlSWEVhNHptSEFZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzIxMDUzOTEwCWZpbGU6VGlrVG9rTWF0cml4XzEuNS44X3g2NF9lbi1VUy5tc2kuemlwCm50RUIwb2JqSWhqbUE4N3J2aUczY3QxZmFudjE5STFYd2RyZ1ZzSUw3cjcvWVlmdGNvVVdpdG94NXV5NGdtWHFscVZWS2VLTmF2S3FUbTNnbU95QkJBPT0K",
-      "url": "https://www.tiktokmatrix.com/TikTokMatrix_1.5.8_x64_en-US.msi.zip"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTS2NOV0dxQ0Z6eTUvcnBUWFZnb2lZKzQ4VkpRQ0V6NnpUeERjMkJaczJySFRzQjhmYUd1L1FOa3h2bDkzR0hNZHpDcWpuRDJZQlJjb0NPR0FUZ1NYYTI1QUZoRVFFZ3dJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzIxMTI5MTkzCWZpbGU6VGlrVG9rTWF0cml4XzEuNS45X3g2NF9lbi1VUy5tc2kuemlwClhndVpjZHZQK2pZbVFscVJNZmwxZkk1eE1hMkw5WW90dnFFRW5pQk9tTk5QUEJtMHM4U2xPMjdtOHVuZmtQZ1ZGR1JTU1ArMjRmRHd2OXppdzltYUJBPT0K",
+      "url": "https://www.tiktokmatrix.com/TikTokMatrix_1.5.9_x64_en-US.msi.zip"
     }
   }
 }
