@@ -21,8 +21,6 @@ import { reactive } from 'vue'
 import mitt from 'mitt'
 import VueDragSelect from "@coleqiu/vue-drag-select";
 import VueDraggableResizable from 'vue-draggable-resizable'
-import * as util from './utils'
-
 
 const emitter = mitt()
 let devices = reactive({ list: [] })
@@ -39,15 +37,18 @@ async function getDevices() {
 }
 getDevices() //get devices on page load
 setInterval(getDevices, 10000)
+import { readTextFile, BaseDirectory } from '@tauri-apps/api/fs'
+const port = await readTextFile('port.txt', { dir: BaseDirectory.AppData });
+const wsPort = await readTextFile('wsport.txt', { dir: BaseDirectory.AppData });
 let config = {
-  wsUrl: import.meta.env.VITE_WS_URL,
-  apiUrl: import.meta.env.VITE_API_URL
+  wsUrl: 'ws://127.0.0.1:' + wsPort,
+  apiUrl: 'http://127.0.0.1:' + port
 }
 
 const app = createApp(App)
 app.use(VueAxios, axios)
 app.use(i18n)
-app.use(VueDragSelect);
+app.use(VueDragSelect)
 app.provide('axios', app.config.globalProperties.axios) // provide 'axios'
 app.provide('devices', devices) // provide 'devices
 app.config.globalProperties.$service = service

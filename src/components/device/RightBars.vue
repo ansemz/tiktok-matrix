@@ -109,7 +109,6 @@
       <div class="modal-action">
         <form method="dialog">
           <button class="btn btn-primary" @click="input_callback">{{ $t('enter') }}</button>
-          <button class="btn btn-secondary" @click="readClipboard">{{ $t('readClipboard') }}</button>
         </form>
       </div>
     </div>
@@ -135,27 +134,7 @@ export default {
     }
   },
   methods: {
-    readClipboard() {
-      this.$service
-        .read_clipboard({
-          serial: this.serial
-        })
-        .then(res => {
-          this.input_dialog_text = res.data
-          var input = document.getElementById("input_dialog_text");
-          input.select(); // 选择文本
-          input.setSelectionRange(0, 99999); // 对于移动设备，确保能选择文本
-          try {
-            var successful = document.execCommand('copy'); // 执行复制操作
-            this.$emitter.emit('showToast', this.$t('copySuccess'))
-          } catch (err) {
-            console.log('Unable to copy', err);
-          }
-        })
-        .catch(err => {
-          console.log(err)
-        })
-    },
+
     openDebugWindow() {
       localStorage.setItem('serial', this.serial);
       const webview = new WebviewWindow('Debug', {
@@ -182,8 +161,6 @@ export default {
       this.input_callback = this.post_adb_input_dialog
     },
     post_input_dialog() {
-      // let encodedText = btoa(encodeURIComponent(this.input_dialog_text));
-      // this.$emitter.emit('adbEventData',{args:['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_TEXT', '--es', 'text', `"${encodedText}"`]})
       this.$emitter.emit('setText', this.input_dialog_text)
       this.input_dialog_text = ''
       this.$refs.input_dialog.close()
