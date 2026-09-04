@@ -86,7 +86,7 @@ jobs:
           r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
           r2-bucket: matrix
           source-dir: ./tikmatrix-pro/target/${{ matrix.target }}/release/bin
-          destination-dir: ${{ matrix.target }}_v2/${{ env.VERSION_DIR }}
+          destination-dir: script/${{ matrix.target }}/${{ env.VERSION_DIR }}
 
       - name: Update Library Version
         run: |
@@ -105,7 +105,7 @@ jobs:
           {
             "name": "script",
             "platform": "linux",
-            "downloadUrl": "https://api.tikmatrix.com/front-api/release/${TARGET}_v2/${VERSION_DIR}/script",
+            "downloadUrl": "https://api.tikmatrix.com/front-api/release/script/${TARGET}/${VERSION_DIR}/script",
             "version": "${VERSION_DIR}",
             "app": "TikMatrix",
             "md5": "$SCRIPT_MD5"

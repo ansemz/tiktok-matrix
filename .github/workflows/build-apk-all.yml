@@ -102,7 +102,7 @@ jobs:
           r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
           r2-bucket: matrix
           source-dir: tikmatrix-pro/android/app/build/apk/
-          destination-dir: apk_v2/${{ env.VERSION_DIR }}
+          destination-dir: apk/${{ env.VERSION_DIR }}
 
       - name: Update Library Version
         shell: bash
@@ -127,7 +127,7 @@ jobs:
           {
             "name": "$NAME",
             "platform": "generic",
-            "downloadUrl": "https://api.tikmatrix.com/front-api/release/apk_v2/${VERSION_DIR}/${FILE}",
+            "downloadUrl": "https://api.tikmatrix.com/front-api/release/apk/${VERSION_DIR}/${FILE}",
             "version": "${VERSION_DIR}",
             "app": "TikMatrix",
             "md5": "$MD5"

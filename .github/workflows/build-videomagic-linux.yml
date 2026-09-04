@@ -92,6 +92,10 @@ jobs:
             exit 1
           fi
 
+      - name: Compute R2 release dir
+        run: echo "R2_RELEASE_DIR=$(node ./scripts/release-paths.js --app=videomagic)" >> $GITHUB_ENV
+        working-directory: video-magic
+
       - name: Upload VideoMagic package to R2
         uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
         with:
@@ -100,7 +104,7 @@ jobs:
           r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
           r2-bucket: matrix
           source-dir: ./video-magic/target/release/bundle/deb-upload
-          destination-dir: ./
+          destination-dir: ${{ env.R2_RELEASE_DIR }}
 
       - name: Clear uploaded files
         run: |
