@@ -147,6 +147,9 @@ jobs:
         with:
           name: tikmatrix-binary
           path: tikmatrix-pro/target/release/tikmatrix-api-rs
+          # Job-to-job hand-off only. This repo is public, so its artifacts are
+          # downloadable by anyone — keep the window as short as Actions allows.
+          retention-days: 1
 
       - name: Upload static directory
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -154,6 +157,7 @@ jobs:
           name: tikmatrix-static
           path: tikmatrix-pro/server/src-rs/static/
           if-no-files-found: warn
+          retention-days: 1
 
       - name: Upload GeoLite2 database
         if: ${{ inputs.deploy_geolite == true }}
@@ -162,6 +166,9 @@ jobs:
           name: geolite2-db
           path: tikmatrix-pro/server/src-rs/data/GeoLite2-Country.mmdb
           if-no-files-found: error
+          # MaxMind's licence forbids redistributing GeoLite2; a public artifact
+          # is redistribution, so this must not linger.
+          retention-days: 1
 
   deploy:
     needs: [prepare, build]
