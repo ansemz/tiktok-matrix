@@ -181,6 +181,20 @@ jobs:
           token: ${{ secrets.REPO_TOKEN }}
           path: LinuxConfig
 
+      # The production .env lives in the private tikmatrix-pro repo. Check it out
+      # here (sparse, just that one file) rather than shipping it through a build
+      # artifact: this workflow runs in a public repo, and artifacts of public
+      # repos are downloadable by anyone.
+      - name: Checkout production env file
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/tikmatrix-pro
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.branch }}
+          path: tikmatrix-pro
+          sparse-checkout: server/src-rs/.env.prod
+          sparse-checkout-cone-mode: false
+
       - name: Download binary
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -210,7 +224,7 @@ jobs:
           SSH_KEY_FILE: ~/.ssh/deploy_key
           REMOTE_DIR: /home/deploy/apps/tikmatrix-api-rs
           DEPLOY_GEOLITE: ${{ inputs.deploy_geolite }}
-          ENV_PROD_CONTENT: ${{ secrets.ENV_PROD_CONTENT }}
+          ENV_PROD_FILE: tikmatrix-pro/server/src-rs/.env.prod
         run: |
           SERVER_ID="${{ matrix.server.id }}"
           SERVER_HOST="${{ matrix.server.host }}"
@@ -248,10 +262,13 @@ jobs:
           # Deploy and setup service
           log_info "Setting up service on server"
 
-          # Create .env file from secret and upload
-          log_info "Creating .env file from secret"
-          echo "$ENV_PROD_CONTENT" > .env.tmp
-          chmod 600 .env.tmp
+          # Upload the production .env straight from the private repo
+          if [[ ! -f "$ENV_PROD_FILE" ]]; then
+            log_error "Production env file not found: $ENV_PROD_FILE"
+            exit 1
+          fi
+          log_info "Uploading .env from $ENV_PROD_FILE"
+          install -m 600 "$ENV_PROD_FILE" .env.tmp
           scp_upload "$SERVER_HOST" "$SERVER_PORT" "$SERVER_USER" "$SSH_KEY_FILE" \
             ".env.tmp" ".env.tmp"
           rm -f .env.tmp
