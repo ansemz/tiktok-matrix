@@ -63,10 +63,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ./tikmatrix-pro/target
-          key: ${{ runner.os }}-cargo-tikmatrix-pro-${{ hashFiles('**/Cargo.lock') }}
+            !./tikmatrix-pro/target/**/bundle/**
+          key: ${{ runner.os }}-cargo-tikmatrix-pro-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-tikmatrix-pro-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-tikmatrix-pro-v2-
 
       - name: Install dependencies
         run: npm install
@@ -158,10 +158,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ./tikmatrix-pro/target
-          key: ${{ runner.os }}-cargo-tikmatrix-${{ hashFiles('**/Cargo.lock') }}
+            !./tikmatrix-pro/target/**/bundle/**
+          key: ${{ runner.os }}-cargo-tikmatrix-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-tikmatrix-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-tikmatrix-v2-
 
       - name: Install dependencies
         run: npm install
@@ -252,10 +252,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ./tikmatrix-pro/target
-          key: ${{ runner.os }}-cargo-igmatrix-${{ hashFiles('**/Cargo.lock') }}
+            !./tikmatrix-pro/target/**/bundle/**
+          key: ${{ runner.os }}-cargo-igmatrix-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-igmatrix-
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-igmatrix-v2-
 
       - name: Install dependencies
         run: npm install
