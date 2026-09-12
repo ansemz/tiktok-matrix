@@ -1,0 +1,1202 @@
+# Server Operations Workflow
+# Consolidates: service health checks, nginx config deployment, nginx setup,
+# SSL renewal, shell script execution, file push, backup management,
+# firewall IP blocking, and post-bootstrap server provisioning.
+name: Server Operations
+run-name: >-
+  ${{ github.event_name == 'schedule'
+      && format('Scheduled ({0})', github.event.schedule)
+      || format('{0} is running {1}', github.actor, github.event.inputs.operation) }} 🛠️
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # Automated service health check every 10 minutes
+    - cron: "0 2 1 * *"     # Automated SSL renewal on the 1st of every month
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Operation to perform"
+        required: true
+        type: choice
+        options:
+          - health-check
+          - push-files
+          - manage-backup
+          - block-ips
+          - unblock-ips
+          - nginx-deploy-config
+          - nginx-configure
+          - run-script
+          - renew-ssl
+          - server-provision
+
+      server:
+        description: "Target server (empty = all)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - server-us
+          - server-dublin
+          - server-sgp
+
+      # ── nginx-deploy-config ───────────────────────────────────────────────
+      nginx_config:
+        description: "[nginx-deploy-config] Config filename (e.g. example.com.conf); empty = deploy all"
+        required: false
+        type: string
+
+      # ── nginx-configure ───────────────────────────────────────────────────
+      domain:
+        description: "[nginx-configure] Domain to configure (e.g. example.com)"
+        required: false
+        type: string
+
+      site_type:
+        description: "[nginx-configure] Site type: static or proxy"
+        required: false
+        type: choice
+        options:
+          - static
+          - proxy
+        default: static
+
+      proxy_backend:
+        description: "[nginx-configure / proxy] Backend URL (e.g. http://127.0.0.1:3000)"
+        required: false
+        type: string
+
+      enable_ssl:
+        description: "[nginx-configure] Request SSL certificate"
+        required: false
+        type: boolean
+        default: false
+
+      ssl_method:
+        description: "[nginx-configure] SSL validation method"
+        required: false
+        type: choice
+        options:
+          - http
+          - route53
+        default: http
+
+      # ── push-files ────────────────────────────────────────────────────────
+      local_path:
+        description: "[push-files] Local source path (e.g. ./build)"
+        required: false
+        type: string
+
+      remote_path:
+        description: "[push-files] Remote destination path (e.g. /var/www/example.com)"
+        required: false
+        type: string
+
+      post_upload_commands:
+        description: '[push-files] Commands to run after upload (e.g. "sudo nginx -s reload")'
+        required: false
+        type: string
+
+      # ── manage-backup ─────────────────────────────────────────────────────
+      backup_action:
+        description: "[manage-backup] Action: list or create"
+        required: false
+        type: choice
+        options:
+          - list
+          - create
+        default: list
+
+      backup_site:
+        description: "[manage-backup / create] Site domain to back up (e.g. example.com)"
+        required: false
+        type: string
+
+      # ── block-ips ─────────────────────────────────────────────────────────
+      block_ips:
+        description: "[block-ips] Comma-separated IPs/CIDRs (e.g. 1.2.3.4,10.0.0.0/8)"
+        required: false
+        type: string
+
+      # ── unblock-ips ───────────────────────────────────────────────────────
+      unblock_ips:
+        description: "[unblock-ips] Comma-separated IPs/CIDRs to unblock (e.g. 1.2.3.4,10.0.0.0/8)"
+        required: false
+        type: string
+
+      # ── run-script ────────────────────────────────────────────────────────
+      script_name:
+        description: "[run-script] Script to execute"
+        required: false
+        type: choice
+        options:
+          - ""
+          - backup-manage.sh
+          - deploy-site.sh
+          - fix-deploy-permissions.sh
+          - health-check.sh
+          - install_alloy.service.sh
+          - nginx-config.sh
+          - push-files.sh
+          - server-provision.sh
+          - setup-hy2.sh
+          - ssl-renew.sh
+
+      script_args:
+        description: "[run-script] Arguments passed to the script"
+        required: false
+        type: string
+
+      # ── renew-ssl ─────────────────────────────────────────────────────────
+      renew_ssl_method:
+        description: "[renew-ssl] SSL validation method"
+        required: false
+        type: choice
+        options:
+          - route53
+          - http
+        default: route53
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.schedule || github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Shared setup: resolve target servers ──────────────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      servers: ${{ steps.get-servers.outputs.servers }}
+      all_hosts: ${{ steps.get-servers.outputs.all_hosts }}
+    steps:
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      - name: Determine target servers
+        id: get-servers
+        run: |
+          if [[ ! -f LinuxConfig/deploy-config.json ]]; then
+            echo "Error: LinuxConfig/deploy-config.json not found"
+            exit 1
+          fi
+
+          CONFIG=$(cat LinuxConfig/deploy-config.json)
+          SELECTED_SERVER="${{ github.event.inputs.server }}"
+
+          if [[ -n "$SELECTED_SERVER" ]]; then
+            SERVERS=$(echo "$CONFIG" | jq -c --arg target "$SELECTED_SERVER" '[.servers[] | select(.id == $target)]')
+          else
+            SERVERS=$(echo "$CONFIG" | jq -c '.servers')
+          fi
+
+          if [[ -z "$SERVERS" || "$SERVERS" == "[]" || "$SERVERS" == "null" ]]; then
+            if [[ -n "$SELECTED_SERVER" ]]; then
+              echo "Error: No servers found for target: $SELECTED_SERVER"
+            else
+              echo "Error: No servers configured in deploy-config.json"
+            fi
+            exit 1
+          fi
+
+          # Every configured host, regardless of the selected target. Consumers that
+          # need the whole fleet (e.g. the auto-block whitelist) must use this, not
+          # the filtered list above.
+          ALL_HOSTS=$(echo "$CONFIG" | jq -r '[.servers[].host] | join(" ")')
+
+          echo "servers=$SERVERS" >> $GITHUB_OUTPUT
+          echo "all_hosts=$ALL_HOSTS" >> $GITHUB_OUTPUT
+          echo "Target servers: $SERVERS"
+          echo "All configured hosts: $ALL_HOSTS"
+
+  # ── Health Check (scheduled every 10 min + manual) ────────────────────────
+  health-check:
+    needs: prepare
+    if: |
+      github.event.inputs.operation == 'health-check' ||
+      github.event.schedule == '*/10 * * * *'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Check and restart services on ${{ matrix.server.id }}
+        env:
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+        run: |
+          set -euo pipefail
+
+          SERVER_ID="${{ matrix.server.id }}"
+          SERVER_HOST="${{ matrix.server.host }}"
+          SERVER_PORT="${{ matrix.server.port }}"
+          SERVER_USER="${{ matrix.server.user }}"
+          
+          echo "🔍 Checking services on $SERVER_ID ($SERVER_HOST)"
+          
+          # SSH to server and check/restart services
+          ssh -i "$SSH_KEY_FILE" -p "$SERVER_PORT" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=10 \
+            "$SERVER_USER@$SERVER_HOST" bash -s << 'EOF'
+          set -euo pipefail
+          
+          echo "========================================"
+          echo "Service Health Check Report"
+          echo "Server: $(hostname)"
+          echo "Time: $(date)"
+          echo "========================================"
+          
+          # Function to check and restart service
+          check_and_restart_service() {
+            local service_name=$1
+            local display_name=$2
+            
+            echo ""
+            echo "Checking $display_name..."
+            
+            if sudo systemctl is-active --quiet "$service_name"; then
+              echo "✅ $display_name is running"
+              return 0
+            else
+              echo "❌ $display_name is NOT running"
+              echo "🔧 Attempting to restart $display_name..."
+              
+              if sudo systemctl restart "$service_name"; then
+                sleep 2
+                if sudo systemctl is-active --quiet "$service_name"; then
+                  echo "✅ $display_name restarted successfully"
+                  return 0
+                else
+                  echo "⚠️  $display_name failed to start after restart"
+                  sudo systemctl status "$service_name" --no-pager || true
+                  return 1
+                fi
+              else
+                echo "❌ Failed to restart $display_name"
+                sudo systemctl status "$service_name" --no-pager || true
+                return 1
+              fi
+            fi
+          }
+          
+          # Check nginx service
+          check_and_restart_service "nginx" "Nginx Service"
+          
+          # Check tikmatrix-api-rs service
+          check_and_restart_service "tikmatrix-api-rs" "TikMatrix API Rust Service"
+          
+          echo ""
+          echo "========================================"
+          echo "Health check completed"
+          echo "========================================"
+          EOF
+          
+          echo "✅ Service health check completed on $SERVER_ID"
+
+      - name: Block request-limited IPs from nginx log on ${{ matrix.server.id }}
+        env:
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          SERVER_ID="${{ matrix.server.id }}"
+          SERVER_HOST="${{ matrix.server.host }}"
+          SERVER_PORT="${{ matrix.server.port }}"
+          SERVER_USER="${{ matrix.server.user }}"
+          ALL_HOSTS="${{ needs.prepare.outputs.all_hosts }}"
+
+          echo "🔍 Checking nginx request-limit logs on $SERVER_ID ($SERVER_HOST)"
+          echo "🛡️  Whitelisted (own fleet): $ALL_HOSTS"
+
+          SSH_OUTPUT=$(ssh -i "$SSH_KEY_FILE" -p "$SERVER_PORT" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=10 \
+            "$SERVER_USER@$SERVER_HOST" bash -s "$ALL_HOSTS" << 'EOF'
+          set -euo pipefail
+
+          LOG_FILE="/var/log/nginx/user.tikmatrix.com.error.log"
+          HISTORY_FILE="/etc/firewall_blocked_ips.txt"
+          LOCK_FILE="/var/lock/firewall_blocked_ips.lock"
+          TAIL_LINES=2000
+          LIMIT_THRESHOLD=3
+          # Trusted source IPs that must never be auto-blocked by nginx rate-limit
+          # detection: our own fleet, passed in from LinuxConfig/deploy-config.json
+          # `.servers[].host` so a newly added server is whitelisted automatically.
+          # Space-separated (ssh flattens the argv, so accept it either way).
+          WHITELIST_IPS="$*"
+          NEW_BLOCKED_IPS=()
+
+          echo "========================================"
+          echo "Nginx Request-Limit Monitor"
+          echo "Server: $(hostname)"
+          echo "Time: $(date)"
+          echo "Log: $LOG_FILE (tail -n $TAIL_LINES)"
+          echo "========================================"
+
+          if ! sudo test -f "$LOG_FILE"; then
+            echo "ℹ️ Log file not found, skipping: $LOG_FILE"
+            exit 0
+          fi
+
+          TMP_LOG=$(mktemp)
+          sudo tail -n "$TAIL_LINES" "$LOG_FILE" > "$TMP_LOG"
+
+          mapfile -t BLOCK_IPS < <(
+            awk -v threshold="$LIMIT_THRESHOLD" '
+              /limiting requests/ && /client: / {
+                split($0, client_part, "client: ")
+                split(client_part[2], rest, ",")
+                ip = rest[1]
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", ip)
+                if (ip != "") {
+                  count[ip]++
+                }
+              }
+              END {
+                for (ip in count) {
+                  if (count[ip] > threshold) {
+                    print ip
+                  }
+                }
+              }
+            ' "$TMP_LOG" | sort -u
+          )
+
+          rm -f "$TMP_LOG"
+
+          if [[ "${#BLOCK_IPS[@]}" -eq 0 ]]; then
+            echo "✅ No IP exceeded request-limit threshold (>$LIMIT_THRESHOLD) in latest $TAIL_LINES lines"
+            exit 0
+          fi
+
+          sudo touch "$HISTORY_FILE"
+          sudo chmod 644 "$HISTORY_FILE"
+          sudo touch "$LOCK_FILE"
+          sudo chmod 644 "$LOCK_FILE"
+
+          echo "🚫 IPs exceeding threshold:"
+          printf ' - %s\n' "${BLOCK_IPS[@]}"
+
+          for IP in "${BLOCK_IPS[@]}"; do
+            if ! echo "$IP" | grep -qE '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'; then
+              echo "SKIP (invalid IPv4): $IP"
+              continue
+            fi
+
+            if [[ " $WHITELIST_IPS " == *" $IP "* ]]; then
+              echo "SKIP (whitelisted): $IP"
+              continue
+            fi
+
+            if ! LOCK_OUTPUT=$(sudo flock "$LOCK_FILE" bash -c '
+              set -euo pipefail
+              IP="$1"
+              HISTORY_FILE="$2"
+              NEW_BLOCKED=0
+              INPUT_READY=0
+              OUTPUT_READY=0
+
+              if iptables -C INPUT -s "$IP" -j DROP 2>/dev/null; then
+                echo "INPUT DROP already exists for $IP"
+                INPUT_READY=1
+              else
+                if iptables -I INPUT -s "$IP" -j DROP; then
+                  echo "INPUT DROP added for $IP"
+                  INPUT_READY=1
+                else
+                  echo "WARNING: failed to add INPUT DROP for $IP"
+                fi
+              fi
+
+              if iptables -C OUTPUT -d "$IP" -j DROP 2>/dev/null; then
+                echo "OUTPUT DROP already exists for $IP"
+                OUTPUT_READY=1
+              else
+                if iptables -I OUTPUT -d "$IP" -j DROP; then
+                  echo "OUTPUT DROP added for $IP"
+                  OUTPUT_READY=1
+                else
+                  echo "WARNING: failed to add OUTPUT DROP for $IP"
+                fi
+              fi
+
+              if [[ "$INPUT_READY" -eq 1 && "$OUTPUT_READY" -eq 1 ]]; then
+                if ! grep -qxF "$IP" "$HISTORY_FILE"; then
+                  echo "$IP" >> "$HISTORY_FILE"
+                  NEW_BLOCKED=1
+                fi
+              fi
+
+              # Keep only the most recent MAX_HISTORY entries (FIFO eviction)
+              MAX_HISTORY=100
+              if [[ "$(wc -l < "$HISTORY_FILE")" -gt "$MAX_HISTORY" ]]; then
+                tail -n "$MAX_HISTORY" "$HISTORY_FILE" > "${HISTORY_FILE}.tmp"
+                mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"
+              fi
+
+              echo "NEW_BLOCKED=$NEW_BLOCKED"
+            ' _ "$IP" "$HISTORY_FILE"); then
+              echo "WARNING: failed to apply lock-protected block operation for $IP"
+              continue
+            fi
+            echo "$LOCK_OUTPUT"
+
+            if echo "$LOCK_OUTPUT" | grep -m1 -q '^NEW_BLOCKED=1$'; then
+              NEW_BLOCKED_IPS+=("$IP")
+            fi
+          done
+
+          if command -v netfilter-persistent &>/dev/null; then
+            sudo netfilter-persistent save
+          elif command -v iptables-save &>/dev/null; then
+            sudo mkdir -p /etc/iptables
+            sudo iptables-save | sudo tee /etc/iptables/rules.v4 > /dev/null
+            echo "iptables rules saved to /etc/iptables/rules.v4"
+          else
+            echo "⚠️ WARNING: netfilter-persistent and iptables-save are unavailable; rules may not persist after reboot"
+          fi
+
+          echo ""
+          echo "=== Current blocked IP history ==="
+          sudo cat "$HISTORY_FILE"
+          echo "=== Total: $(sudo wc -l < "$HISTORY_FILE") blocked IP(s) ==="
+
+          if [[ "${#NEW_BLOCKED_IPS[@]}" -gt 0 ]]; then
+            echo "NOTIFICATION_NEW_BLOCKED_IPS=$(IFS=,; echo "${NEW_BLOCKED_IPS[*]}")"
+          else
+            echo "NOTIFICATION_NEW_BLOCKED_IPS="
+          fi
+          EOF
+          )
+
+          echo "$SSH_OUTPUT"
+
+          NEW_BLOCKED_LINE=$(echo "$SSH_OUTPUT" | grep -m1 '^NOTIFICATION_NEW_BLOCKED_IPS=' || true)
+          NEW_BLOCKED_LIST="${NEW_BLOCKED_LINE#NOTIFICATION_NEW_BLOCKED_IPS=}"
+
+          if [[ -n "$NEW_BLOCKED_LIST" ]]; then
+            if [[ -n "${BOT_TOKEN:-}" && -n "${CHAT_ID:-}" ]]; then
+              RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              MSG=$(printf '%s\n%s\n%s\n%s' \
+                "🚫 Nginx Auto-Block Triggered" \
+                "Server: ${SERVER_ID}" \
+                "Blocked IPs: ${NEW_BLOCKED_LIST}" \
+                "Run: ${RUN_URL}")
+              if curl -s --connect-timeout 10 --max-time 20 -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                -d "chat_id=${CHAT_ID}" \
+                --data-urlencode "text=${MSG}" >/dev/null; then
+                echo "✅ Telegram notification sent for new blocked IPs"
+              else
+                echo "⚠️ Telegram notification request failed"
+              fi
+            else
+              echo "⚠️ Telegram notification skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is empty"
+            fi
+          else
+            echo "ℹ️ No newly blocked IPs, Telegram notification skipped"
+          fi
+
+          echo "✅ Nginx request-limit monitor completed on $SERVER_ID"
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  # ── Push Files ────────────────────────────────────────────────────────────
+  push-files:
+    needs: prepare
+    if: github.event.inputs.operation == 'push-files'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      - name: Validate inputs
+        run: |
+          if [[ -z "${{ github.event.inputs.local_path }}" ]] || [[ -z "${{ github.event.inputs.remote_path }}" ]]; then
+            echo "Error: Both local_path and remote_path are required for push-files operation"
+            exit 1
+          fi
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Push files to ${{ matrix.server.id }}
+        env:
+          CONFIG_FILE: LinuxConfig/deploy-config.json
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+        run: |
+          chmod +x ./LinuxConfig/shell/push-files.sh
+          ./LinuxConfig/shell/push-files.sh \
+            "${{ matrix.server.id }}" \
+            "${{ github.event.inputs.local_path }}" \
+            "${{ github.event.inputs.remote_path }}" \
+            "${{ github.event.inputs.post_upload_commands }}"
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  # ── Manage Backup ─────────────────────────────────────────────────────────
+  manage-backup:
+    needs: prepare
+    if: github.event.inputs.operation == 'manage-backup'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      - name: Validate inputs
+        run: |
+          if [[ "${{ github.event.inputs.backup_action }}" == "create" ]] && [[ -z "${{ github.event.inputs.backup_site }}" ]]; then
+            echo "Error: backup_site is required for create action"
+            exit 1
+          fi
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Manage backups on ${{ matrix.server.id }}
+        env:
+          CONFIG_FILE: LinuxConfig/deploy-config.json
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+        run: |
+          chmod +x ./LinuxConfig/shell/backup-manage.sh
+          ./LinuxConfig/shell/backup-manage.sh \
+            "${{ matrix.server.id }}" \
+            "${{ github.event.inputs.backup_action }}" \
+            "${{ github.event.inputs.backup_site }}"
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  # ── Block IPs ─────────────────────────────────────────────────────────────
+  block-ips:
+    needs: prepare
+    if: github.event.inputs.operation == 'block-ips'
+    runs-on: ubuntu-latest
+    permissions: {}
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Validate inputs
+        run: |
+          if [[ -z "${{ github.event.inputs.block_ips }}" ]]; then
+            echo "Error: block_ips is required for block-ips operation"
+            exit 1
+          fi
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Block IPs on ${{ matrix.server.id }}
+        env:
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+        run: |
+          SERVER_ID="${{ matrix.server.id }}"
+          SERVER_HOST="${{ matrix.server.host }}"
+          SERVER_PORT="${{ matrix.server.port }}"
+          SERVER_USER="${{ matrix.server.user }}"
+          BLOCK_IPS="${{ github.event.inputs.block_ips }}"
+
+          echo "Connecting to $SERVER_ID ($SERVER_USER@$SERVER_HOST:$SERVER_PORT)"
+
+          # Write the remote script using a quoted heredoc so BLOCK_IPS is
+          # never expanded client-side; pass it as a positional argument instead.
+          cat > /tmp/block_ips_remote.sh << 'SCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+
+          BLOCK_IPS="${1:-}"
+          HISTORY_FILE="/etc/firewall_blocked_ips.txt"
+
+          sudo touch "$HISTORY_FILE"
+          sudo chmod 644 "$HISTORY_FILE"
+
+          echo "=== Blocking IPs on $(hostname) ==="
+          IFS=',' read -ra RAW_LIST <<< "$BLOCK_IPS"
+          for RAW_IP in "${RAW_LIST[@]}"; do
+            IP=$(echo "$RAW_IP" | tr -d ' ')
+            [[ -z "$IP" ]] && continue
+
+            # Validate IPv4 or IPv4 CIDR with octet range check (0-255, prefix 0-32)
+            if ! echo "$IP" | grep -qE '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/([0-9]|[12][0-9]|3[0-2]))?$'; then
+              echo "SKIP (invalid format): $IP"
+              continue
+            fi
+
+            echo "Blocking: $IP"
+            if sudo iptables -C INPUT -s "$IP" -j DROP 2>/dev/null; then
+              echo "  INPUT  DROP rule already exists"
+            else
+              sudo iptables -I INPUT -s "$IP" -j DROP && echo "  INPUT  DROP added" || echo "  WARNING: failed to add INPUT DROP rule"
+            fi
+            if sudo iptables -C OUTPUT -d "$IP" -j DROP 2>/dev/null; then
+              echo "  OUTPUT DROP rule already exists"
+            else
+              sudo iptables -I OUTPUT -d "$IP" -j DROP && echo "  OUTPUT DROP added" || echo "  WARNING: failed to add OUTPUT DROP rule"
+            fi
+
+            # Append to history file only if not already recorded (flock for atomicity)
+            sudo flock "$HISTORY_FILE" -c "grep -qxF '$IP' '$HISTORY_FILE' || echo '$IP' >> '$HISTORY_FILE'"
+          done
+
+          # Persist iptables rules so they survive reboots
+          if command -v netfilter-persistent &>/dev/null; then
+            sudo netfilter-persistent save
+          elif command -v iptables-save &>/dev/null; then
+            sudo mkdir -p /etc/iptables
+            sudo iptables-save | sudo tee /etc/iptables/rules.v4 > /dev/null
+            echo "iptables rules saved to /etc/iptables/rules.v4"
+          fi
+
+          echo ""
+          echo "=== All Blocked IPs on $(hostname) (history: $HISTORY_FILE) ==="
+          cat "$HISTORY_FILE"
+          echo "=== Total: $(wc -l < "$HISTORY_FILE") blocked IP(s) ==="
+          SCRIPT
+
+          ssh -i "$SSH_KEY_FILE" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 \
+            -p "$SERVER_PORT" \
+            "$SERVER_USER@$SERVER_HOST" \
+            bash -s -- "$BLOCK_IPS" < /tmp/block_ips_remote.sh
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  # ── Unblock IPs ───────────────────────────────────────────────────────────
+  unblock-ips:
+    needs: prepare
+    if: github.event.inputs.operation == 'unblock-ips'
+    runs-on: ubuntu-latest
+    permissions: {}
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Validate inputs
+        run: |
+          if [[ -z "${{ github.event.inputs.unblock_ips }}" ]]; then
+            echo "Error: unblock_ips is required for unblock-ips operation"
+            exit 1
+          fi
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Unblock IPs on ${{ matrix.server.id }}
+        env:
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+        run: |
+          SERVER_ID="${{ matrix.server.id }}"
+          SERVER_HOST="${{ matrix.server.host }}"
+          SERVER_PORT="${{ matrix.server.port }}"
+          SERVER_USER="${{ matrix.server.user }}"
+          UNBLOCK_IPS="${{ github.event.inputs.unblock_ips }}"
+
+          echo "Connecting to $SERVER_ID ($SERVER_USER@$SERVER_HOST:$SERVER_PORT)"
+
+          # Write the remote script using a quoted heredoc so UNBLOCK_IPS is
+          # never expanded client-side; pass it as a positional argument instead.
+          cat > /tmp/unblock_ips_remote.sh << 'SCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+
+          UNBLOCK_IPS="${1:-}"
+          HISTORY_FILE="/etc/firewall_blocked_ips.txt"
+
+          sudo touch "$HISTORY_FILE"
+          sudo chmod 644 "$HISTORY_FILE"
+
+          echo "=== Unblocking IPs on $(hostname) ==="
+          IFS=',' read -ra RAW_LIST <<< "$UNBLOCK_IPS"
+          for RAW_IP in "${RAW_LIST[@]}"; do
+            IP=$(echo "$RAW_IP" | tr -d ' ')
+            [[ -z "$IP" ]] && continue
+
+            # Validate IPv4 or IPv4 CIDR with octet range check (0-255, prefix 0-32)
+            if ! echo "$IP" | grep -qE '^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(/([0-9]|[12][0-9]|3[0-2]))?$'; then
+              echo "SKIP (invalid format): $IP"
+              continue
+            fi
+
+            echo "Unblocking: $IP"
+
+            # Remove INPUT DROP rule
+            if sudo iptables -C INPUT -s "$IP" -j DROP 2>/dev/null; then
+              sudo iptables -D INPUT -s "$IP" -j DROP && echo "  INPUT  DROP removed" || echo "  WARNING: failed to remove INPUT DROP rule"
+            else
+              echo "  INPUT  DROP rule not found (already removed)"
+            fi
+
+            # Remove OUTPUT DROP rule
+            if sudo iptables -C OUTPUT -d "$IP" -j DROP 2>/dev/null; then
+              sudo iptables -D OUTPUT -d "$IP" -j DROP && echo "  OUTPUT DROP removed" || echo "  WARNING: failed to remove OUTPUT DROP rule"
+            else
+              echo "  OUTPUT DROP rule not found (already removed)"
+            fi
+
+            # Remove from history file (flock for atomicity)
+            # Use | as sed delimiter to handle IPs with CIDR notation (e.g. 1.2.3.0/24)
+            sudo flock "$HISTORY_FILE" -c "sed -i '\|^${IP//./\\.}$|d' '$HISTORY_FILE'" 2>/dev/null && \
+              echo "  Removed from history file" || \
+              echo "  Not found in history file or already removed"
+          done
+
+          # Persist iptables rules so changes survive reboots
+          if command -v netfilter-persistent &>/dev/null; then
+            sudo netfilter-persistent save
+          elif command -v iptables-save &>/dev/null; then
+            sudo mkdir -p /etc/iptables
+            sudo iptables-save | sudo tee /etc/iptables/rules.v4 > /dev/null
+            echo "iptables rules saved to /etc/iptables/rules.v4"
+          fi
+
+          echo ""
+          echo "=== Remaining Blocked IPs on $(hostname) (history: $HISTORY_FILE) ==="
+          cat "$HISTORY_FILE"
+          echo "=== Total: $(wc -l < "$HISTORY_FILE") blocked IP(s) ==="
+          SCRIPT
+
+          ssh -i "$SSH_KEY_FILE" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 \
+            -p "$SERVER_PORT" \
+            "$SERVER_USER@$SERVER_HOST" \
+            bash -s -- "$UNBLOCK_IPS" < /tmp/unblock_ips_remote.sh
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  # ── Nginx Deploy Config ───────────────────────────────────────────────────
+  nginx-deploy-config:
+    needs: prepare
+    if: github.event.inputs.operation == 'nginx-deploy-config'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Deploy nginx configs to ${{ matrix.server.id }}
+        env:
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+        run: |
+          SERVER_ID="${{ matrix.server.id }}"
+          SERVER_HOST="${{ matrix.server.host }}"
+          SERVER_PORT="${{ matrix.server.port }}"
+          SERVER_USER="${{ matrix.server.user }}"
+          SELECTED_CONFIG="${{ github.event.inputs.nginx_config }}"
+
+          source ./LinuxConfig/shell/lib-common.sh
+
+          # Determine which configs to deploy
+          if [[ -n "$SELECTED_CONFIG" ]]; then
+            CONFIG_FILE="LinuxConfig/nginx/${SELECTED_CONFIG}"
+            if [[ ! -f "$CONFIG_FILE" ]]; then
+              echo "Error: Configuration file $CONFIG_FILE not found"
+              exit 1
+            fi
+            CONFIGS=("${SELECTED_CONFIG}")
+          else
+            mapfile -t CONFIGS < <(find LinuxConfig/nginx -name "*.conf" -type f -exec basename {} \; | sort)
+          fi
+
+          if [[ ${#CONFIGS[@]} -eq 0 ]]; then
+            echo "Error: No nginx configuration files found in LinuxConfig/nginx/"
+            exit 1
+          fi
+
+          echo "🚀 Deploying ${#CONFIGS[@]} config(s) to $SERVER_ID ($SERVER_HOST)"
+
+          for NGINX_CONFIG in "${CONFIGS[@]}"; do
+            log_info "Deploying $NGINX_CONFIG to $SERVER_ID"
+
+            scp_upload "$SERVER_HOST" "$SERVER_PORT" "$SERVER_USER" "$SSH_KEY_FILE" \
+              "LinuxConfig/nginx/$NGINX_CONFIG" "${NGINX_CONFIG}.tmp"
+
+            ssh -i "$SSH_KEY_FILE" -p "$SERVER_PORT" \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=10 \
+              "$SERVER_USER@$SERVER_HOST" bash -s -- "$NGINX_CONFIG" << 'EOF'
+          set -euo pipefail
+
+          NGINX_CONFIG="$1"
+
+          if [[ ! "$NGINX_CONFIG" =~ ^[a-zA-Z0-9._-]+\.conf$ ]]; then
+            echo "❌ Invalid nginx configuration filename: $NGINX_CONFIG"
+            exit 1
+          fi
+
+          echo "Deploying nginx configuration: $NGINX_CONFIG"
+
+          mv ~/"${NGINX_CONFIG}.tmp" /tmp/"${NGINX_CONFIG}.new"
+          chmod 644 /tmp/"${NGINX_CONFIG}.new"
+
+          BACKUP_EXISTS=false
+          if [[ -f /etc/nginx/conf.d/"$NGINX_CONFIG" ]]; then
+            if sudo cp /etc/nginx/conf.d/"$NGINX_CONFIG" /tmp/"${NGINX_CONFIG}.backup"; then
+              BACKUP_EXISTS=true
+              echo "✅ Backup created"
+            else
+              echo "❌ Failed to create backup"
+              sudo rm -f /tmp/"${NGINX_CONFIG}.new"
+              exit 1
+            fi
+          fi
+
+          sudo cp /tmp/"${NGINX_CONFIG}.new" /etc/nginx/conf.d/"$NGINX_CONFIG"
+
+          if sudo nginx -t; then
+            echo "✅ Nginx config test passed"
+            sudo systemctl reload nginx
+            echo "✅ Nginx reloaded"
+          else
+            echo "❌ Nginx config test failed, rolling back..."
+            if [[ "$BACKUP_EXISTS" == "true" ]]; then
+              sudo mv /tmp/"${NGINX_CONFIG}.backup" /etc/nginx/conf.d/"$NGINX_CONFIG"
+              echo "✅ Previous configuration restored"
+            else
+              sudo rm -f /etc/nginx/conf.d/"$NGINX_CONFIG"
+              echo "⚠️  No previous configuration found, removed invalid config"
+            fi
+            sudo rm -f /tmp/"${NGINX_CONFIG}.new"
+            exit 1
+          fi
+
+          sudo rm -f /tmp/"${NGINX_CONFIG}.backup" /tmp/"${NGINX_CONFIG}.new"
+          echo "✅ $NGINX_CONFIG deployed successfully!"
+          EOF
+
+            log_success "$NGINX_CONFIG deployed to $SERVER_ID"
+          done
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  # ── Nginx Configure (domain setup + optional SSL) ─────────────────────────
+  nginx-configure:
+    needs: prepare
+    if: github.event.inputs.operation == 'nginx-configure'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      - name: Validate inputs
+        run: |
+          if [[ -z "${{ github.event.inputs.domain }}" ]]; then
+            echo "Error: domain is required for nginx-configure operation"
+            exit 1
+          fi
+
+          if [[ "${{ github.event.inputs.site_type }}" == "proxy" ]] && [[ -z "${{ github.event.inputs.proxy_backend }}" ]]; then
+            echo "Error: proxy_backend is required for proxy site type"
+            exit 1
+          fi
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Configure Nginx on ${{ matrix.server.id }}
+        env:
+          CONFIG_FILE: LinuxConfig/deploy-config.json
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          chmod +x ./LinuxConfig/shell/nginx-config.sh
+          ./LinuxConfig/shell/nginx-config.sh \
+            "${{ matrix.server.id }}" \
+            "${{ github.event.inputs.domain }}" \
+            "${{ github.event.inputs.site_type }}" \
+            "${{ github.event.inputs.proxy_backend }}" \
+            "${{ github.event.inputs.enable_ssl }}" \
+            "${{ github.event.inputs.ssl_method }}"
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  # ── Run Shell Script ──────────────────────────────────────────────────────
+  run-script:
+    needs: prepare
+    if: github.event.inputs.operation == 'run-script'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      - name: Validate inputs
+        run: |
+          SCRIPT_NAME="${{ github.event.inputs.script_name }}"
+          if [[ -z "$SCRIPT_NAME" ]]; then
+            echo "Error: script_name is required for run-script operation"
+            exit 1
+          fi
+
+          SCRIPT_PATH="LinuxConfig/shell/$SCRIPT_NAME"
+          if [[ ! -f "$SCRIPT_PATH" ]]; then
+            echo "Error: Script $SCRIPT_NAME not found in LinuxConfig/shell/"
+            exit 1
+          fi
+
+          echo "✅ Script $SCRIPT_NAME found"
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Run ${{ github.event.inputs.script_name }} on ${{ matrix.server.id }}
+        env:
+          CONFIG_FILE: LinuxConfig/deploy-config.json
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+        run: |
+          SERVER_ID="${{ matrix.server.id }}"
+          SERVER_HOST="${{ matrix.server.host }}"
+          SERVER_PORT="${{ matrix.server.port }}"
+          SERVER_USER="${{ matrix.server.user }}"
+          SCRIPT_NAME="${{ github.event.inputs.script_name }}"
+          SCRIPT_ARGS="${{ github.event.inputs.script_args }}"
+
+          echo "🚀 Running $SCRIPT_NAME on $SERVER_ID ($SERVER_HOST)"
+
+          source ./LinuxConfig/shell/lib-common.sh
+
+          log_info "Uploading script to server"
+          scp_upload "$SERVER_HOST" "$SERVER_PORT" "$SERVER_USER" "$SSH_KEY_FILE" \
+            "LinuxConfig/shell/$SCRIPT_NAME" "script_to_run.sh"
+
+          if [[ -f "LinuxConfig/shell/lib-common.sh" ]]; then
+            log_info "Uploading lib-common.sh to server"
+            scp_upload "$SERVER_HOST" "$SERVER_PORT" "$SERVER_USER" "$SSH_KEY_FILE" \
+              "LinuxConfig/shell/lib-common.sh" "lib-common.sh"
+          fi
+
+          log_info "Executing script on server"
+          ssh -i "$SSH_KEY_FILE" -p "$SERVER_PORT" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=10 \
+            "$SERVER_USER@$SERVER_HOST" bash -s -- "$SCRIPT_ARGS" << 'EOF'
+          set -euo pipefail
+
+          SCRIPT_ARGS="${1:-}"
+
+          chmod +x ~/script_to_run.sh
+          if [[ -f ~/lib-common.sh ]]; then
+            chmod +x ~/lib-common.sh
+          fi
+
+          echo "Running script with args: $SCRIPT_ARGS"
+          cd ~
+
+          if [[ -n "$SCRIPT_ARGS" ]]; then
+            read -ra ARGS <<< "$SCRIPT_ARGS"
+            sudo ./script_to_run.sh "${ARGS[@]}"
+          else
+            sudo ./script_to_run.sh
+          fi
+
+          rm -f ~/script_to_run.sh ~/lib-common.sh
+          echo "✅ Script execution completed!"
+          EOF
+
+          log_success "Script execution on $SERVER_ID completed successfully!"
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  # ── Renew SSL Certificates (scheduled monthly + manual) ───────────────────
+  renew-ssl:
+    needs: prepare
+    if: |
+      github.event.inputs.operation == 'renew-ssl' ||
+      github.event.schedule == '0 2 1 * *'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Renew SSL certificates on ${{ matrix.server.id }}
+        env:
+          CONFIG_FILE: LinuxConfig/deploy-config.json
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SSL_METHOD: ${{ github.event.inputs.renew_ssl_method || 'route53' }}
+        run: |
+          chmod +x ./LinuxConfig/shell/ssl-renew.sh
+          ./LinuxConfig/shell/ssl-renew.sh "${{ matrix.server.id }}"
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  # ── Server Provision (post-bootstrap system setup) ────────────────────────
+  # Takes over everything scripts/setup-vps.sh used to do beyond creating the
+  # deploy user: packages, iptables baseline, fail2ban, nginx, certbot, kernel
+  # hardening and fd limits. Idempotent — safe to re-run on a live server.
+  server-provision:
+    needs: prepare
+    if: github.event.inputs.operation == 'server-provision'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Provision ${{ matrix.server.id }}
+        env:
+          CONFIG_FILE: LinuxConfig/deploy-config.json
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+        run: |
+          chmod +x ./LinuxConfig/shell/server-provision.sh
+          ./LinuxConfig/shell/server-provision.sh "${{ matrix.server.id }}"
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+
+  notify:
+    needs: [prepare, health-check, push-files, manage-backup, block-ips, unblock-ips, nginx-deploy-config, nginx-configure, run-script, renew-ssl, server-provision]
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram notification
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          RESULTS='${{ toJson(needs) }}'
+          if echo "$RESULTS" | grep -q '"failure"'; then ICON="❌"; \
+          elif echo "$RESULTS" | grep -q '"cancelled"'; then ICON="⚠️"; \
+          else ICON="✅"; fi
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG=$(printf '%s\n%s\n%s' \
+            "${ICON} ${{ github.workflow }}" \
+            "Operation: ${{ inputs.operation || 'scheduled' }} | Server: ${{ inputs.server || 'all' }}" \
+            "Run: ${RUN_URL}")
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${MSG}"

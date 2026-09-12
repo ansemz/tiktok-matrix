@@ -1,0 +1,383 @@
+name: Deploy TikMatrix API Rust Service
+run-name: ${{ github.actor }} is deploying TikMatrix API Rust Service 🚀
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g., v1.0.0), or 'auto' to use date+sha"
+        required: false
+        default: "auto"
+        type: string
+      branch:
+        description: "Branch to build from in tikmatrix-api-rs"
+        required: false
+        default: "main"
+        type: string
+      server:
+        description: "Target server (leave empty for all servers)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - server-us
+          - server-dublin
+          - server-sgp
+      deploy_geolite:
+        description: "Deploy GeoLite2-Country.mmdb file (enable for first deployment or updates)"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve-version.outputs.version }}
+    steps:
+      - name: Checkout tikmatrix-pro private repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/tikmatrix-pro
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.branch }}
+
+      - name: Resolve version
+        id: resolve-version
+        run: |
+          if [[ "${{ inputs.version }}" == "auto" || -z "${{ inputs.version }}" ]]; then
+            VERSION="v$(date +%Y.%m.%d)-$(git rev-parse --short HEAD)"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Resolved version: $VERSION"
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          VERSION="${{ steps.resolve-version.outputs.version }}"
+
+          if git ls-remote --tags origin | grep -q "refs/tags/${VERSION}$"; then
+            echo "Tag ${VERSION} already exists on remote, skipping tag creation"
+          else
+            git tag -a "${VERSION}" -m "Release ${VERSION}"
+            git push origin "${VERSION}"
+            echo "Tag ${VERSION} created and pushed successfully"
+          fi
+
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      servers: ${{ steps.get-servers.outputs.servers }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      - name: Determine target servers
+        id: get-servers
+        run: |
+          CONFIG=$(cat LinuxConfig/deploy-config.json)
+          SELECTED_SERVER="${{ github.event.inputs.server }}"
+
+          if [[ -n "$SELECTED_SERVER" ]]; then
+            # Use specific server
+            SERVERS=$(echo "$CONFIG" | jq -c --arg target "$SELECTED_SERVER" '[.servers[] | select(.id == $target)]')
+          else
+            # Use all servers
+            SERVERS=$(echo "$CONFIG" | jq -c '.servers')
+          fi
+
+          # Validate servers is not empty
+          if [[ -z "$SERVERS" || "$SERVERS" == "[]" || "$SERVERS" == "null" ]]; then
+            echo "Error: No servers found"
+            exit 1
+          fi
+
+          echo "servers=$SERVERS" >> $GITHUB_OUTPUT
+          echo "Target servers: $SERVERS"
+
+  build:
+    needs: create-tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tikmatrix-pro repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/tikmatrix-pro
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.branch }}
+          path: tikmatrix-pro
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tikmatrix-pro/target
+          key: ${{ runner.os }}-cargo-api-rs-${{ hashFiles('tikmatrix-pro/Cargo.lock') }}
+
+      - name: Build release
+        run: cd tikmatrix-pro && cargo build -p tikmatrix-api-rs --release
+
+      - name: Upload binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tikmatrix-binary
+          path: tikmatrix-pro/target/release/tikmatrix-api-rs
+          # Job-to-job hand-off only. This repo is public, so its artifacts are
+          # downloadable by anyone — keep the window as short as Actions allows.
+          retention-days: 1
+
+      - name: Upload static directory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tikmatrix-static
+          path: tikmatrix-pro/server/src-rs/static/
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Upload GeoLite2 database
+        if: ${{ inputs.deploy_geolite == true }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: geolite2-db
+          path: tikmatrix-pro/server/src-rs/data/GeoLite2-Country.mmdb
+          if-no-files-found: error
+          # MaxMind's licence forbids redistributing GeoLite2; a public artifact
+          # is redistribution, so this must not linger.
+          retention-days: 1
+
+  deploy:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: ${{ fromJson(needs.prepare.outputs.servers) }}
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Checkout LinuxConfig repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/LinuxConfig
+          token: ${{ secrets.REPO_TOKEN }}
+          path: LinuxConfig
+
+      # The production .env lives in the private tikmatrix-pro repo. Check it out
+      # here (sparse, just that one file) rather than shipping it through a build
+      # artifact: this workflow runs in a public repo, and artifacts of public
+      # repos are downloadable by anyone.
+      - name: Checkout production env file
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/tikmatrix-pro
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.branch }}
+          path: tikmatrix-pro
+          sparse-checkout: server/src-rs/.env.prod
+          sparse-checkout-cone-mode: false
+
+      - name: Download binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: tikmatrix-binary
+
+      - name: Download static directory
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: tikmatrix-static
+          path: static/
+
+      - name: Download GeoLite2 database
+        if: ${{ inputs.deploy_geolite == true }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: geolite2-db
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Deploy to ${{ matrix.server.id }}
+        env:
+          CONFIG_FILE: LinuxConfig/deploy-config.json
+          SSH_KEY_FILE: ~/.ssh/deploy_key
+          REMOTE_DIR: /home/deploy/apps/tikmatrix-api-rs
+          DEPLOY_GEOLITE: ${{ inputs.deploy_geolite }}
+          ENV_PROD_FILE: tikmatrix-pro/server/src-rs/.env.prod
+        run: |
+          SERVER_ID="${{ matrix.server.id }}"
+          SERVER_HOST="${{ matrix.server.host }}"
+          SERVER_PORT="${{ matrix.server.port }}"
+          SERVER_USER="${{ matrix.server.user }}"
+
+          echo "🚀 Deploying to $SERVER_ID ($SERVER_HOST)"
+
+          # Source common library functions
+          source ./LinuxConfig/shell/lib-common.sh
+
+          # Upload binary
+          log_info "Uploading binary to server"
+          scp_upload "$SERVER_HOST" "$SERVER_PORT" "$SERVER_USER" "$SSH_KEY_FILE" \
+            "tikmatrix-api-rs" "tikmatrix-api-rs.tmp"
+
+          # Upload static directory if it exists
+          if [[ -d "static" && -n "$(ls -A static 2>/dev/null)" ]]; then
+            log_info "Uploading static directory to server"
+            tar -czf static.tar.gz -C static .
+            scp_upload "$SERVER_HOST" "$SERVER_PORT" "$SERVER_USER" "$SSH_KEY_FILE" \
+              "static.tar.gz" "static.tar.gz.tmp"
+            rm -f static.tar.gz
+          else
+            log_info "No static directory found, skipping"
+          fi
+
+          # Upload GeoLite2 database if enabled
+          if [[ "$DEPLOY_GEOLITE" == "true" ]]; then
+            log_info "Uploading GeoLite2-Country.mmdb to server"
+            scp_upload "$SERVER_HOST" "$SERVER_PORT" "$SERVER_USER" "$SSH_KEY_FILE" \
+              "GeoLite2-Country.mmdb" "GeoLite2-Country.mmdb.tmp"
+          fi
+
+          # Deploy and setup service
+          log_info "Setting up service on server"
+
+          # Upload the production .env straight from the private repo
+          if [[ ! -f "$ENV_PROD_FILE" ]]; then
+            log_error "Production env file not found: $ENV_PROD_FILE"
+            exit 1
+          fi
+          log_info "Uploading .env from $ENV_PROD_FILE"
+          install -m 600 "$ENV_PROD_FILE" .env.tmp
+          scp_upload "$SERVER_HOST" "$SERVER_PORT" "$SERVER_USER" "$SSH_KEY_FILE" \
+            ".env.tmp" ".env.tmp"
+          rm -f .env.tmp
+
+          ssh -i "$SSH_KEY_FILE" -p "$SERVER_PORT" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=10 \
+            "$SERVER_USER@$SERVER_HOST" bash -s "$DEPLOY_GEOLITE" << 'EOF'
+          set -euo pipefail
+
+          REMOTE_DIR="/home/deploy/apps/tikmatrix-api-rs"
+          DEPLOY_GEOLITE="$1"
+
+          # Move binary to final location
+          echo "Moving binary to $REMOTE_DIR"
+          mkdir -p "$REMOTE_DIR"
+          mv ~/tikmatrix-api-rs.tmp "$REMOTE_DIR/tikmatrix-api-rs"
+          chmod +x "$REMOTE_DIR/tikmatrix-api-rs"
+
+          # Extract static directory if uploaded
+          if [[ -f ~/static.tar.gz.tmp ]]; then
+            echo "Extracting static directory to $REMOTE_DIR/static/"
+            mkdir -p "$REMOTE_DIR/static"
+            tar -xzf ~/static.tar.gz.tmp -C "$REMOTE_DIR/static"
+            rm -f ~/static.tar.gz.tmp
+            echo "Static directory deployed successfully"
+          fi
+
+          # Move GeoLite2 database if enabled
+          if [[ "$DEPLOY_GEOLITE" == "true" ]]; then
+            echo "Moving GeoLite2-Country.mmdb to $REMOTE_DIR/data/"
+            mkdir -p "$REMOTE_DIR/data"
+            mv ~/GeoLite2-Country.mmdb.tmp "$REMOTE_DIR/data/GeoLite2-Country.mmdb"
+            chmod 644 "$REMOTE_DIR/data/GeoLite2-Country.mmdb"
+          fi
+
+          # Move .env file to program directory
+          echo "Moving .env to $REMOTE_DIR/.env"
+          mv ~/.env.tmp "$REMOTE_DIR/.env"
+          chmod 600 "$REMOTE_DIR/.env"
+
+          # Create log directory
+          echo "Creating log directory"
+          sudo mkdir -p /var/log/tikmatrix-api-rs
+          sudo chown deploy:deploy /var/log/tikmatrix-api-rs
+          sudo chmod 755 /var/log/tikmatrix-api-rs
+
+          # Create systemd service
+          echo "Creating systemd service"
+          cat > /tmp/tikmatrix-api-rs.service <<'SERVICE'
+          [Unit]
+          Description=TikMatrix API Service
+          After=network.target
+
+          [Service]
+          User=deploy
+          WorkingDirectory=/home/deploy/apps/tikmatrix-api-rs
+          ExecStart=/home/deploy/apps/tikmatrix-api-rs/tikmatrix-api-rs
+          Restart=on-failure
+          RestartSec=5
+          Environment=RUST_LOG=info
+          StandardOutput=append:/var/log/tikmatrix-api-rs/output.log
+          StandardError=append:/var/log/tikmatrix-api-rs/error.log
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+
+          # Install and restart service
+          echo "Installing and starting systemd service"
+          sudo mv /tmp/tikmatrix-api-rs.service /etc/systemd/system/
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now tikmatrix-api-rs.service || true
+          sudo systemctl restart tikmatrix-api-rs.service
+          echo "✅ Deployment completed!"
+          EOF
+
+          log_success "Deployment to $SERVER_ID completed successfully!"
+
+      - name: Cleanup SSH Key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+  notify:
+    needs: [create-tag, prepare, build, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram notification
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          RESULTS='${{ toJson(needs) }}'
+          if echo "$RESULTS" | grep -q '"failure"'; then ICON="❌"; \
+          elif echo "$RESULTS" | grep -q '"cancelled"'; then ICON="⚠️"; \
+          else ICON="✅"; fi
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG=$(printf '%s\n%s\n%s' \
+            "${ICON} ${{ github.workflow }}" \
+            "Version: ${{ needs.create-tag.outputs.version }} | Server: ${{ inputs.server || 'all' }}" \
+            "Run: ${RUN_URL}")
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${MSG}"

@@ -1,39 +1,51 @@
 # TikMatrix
 
-TikMatrix 是一个群控安卓真实手机（非云控，非协议），基于adb和android uiautomator的tiktok自动化运营工具，可以实现自动注册账号，自动登录，自动发布视频，自动点赞，自动关注，自动收藏，自动评论, 自动私信, 自动刷视频, 全网视频采集等功能。
-> TikMatrix is a real android phone based on adb and android uiautomator. It provides tiktok automation tools for real phone registration, login, publish videos, like videos, follow, collect, comment, private message, brush videos and more.
+TikMatrix is a desktop app that automates TikTok and Instagram on connected
+Android phones — multi-account management, bulk posting, follower and DM
+automation, and task scheduling across a whole device farm.
 
-## Quick start
+- Website: <https://www.tikmatrix.com>
+- Documentation: <https://tikmatrix.com/docs/intro>
+- Downloads: <https://www.tikmatrix.com/Download-TikMatrix>
+- Bug reports and feature requests: [Issues](https://github.com/tikmatrix/tikmatrix-desktop/issues)
 
-[Official website](https://www.tikmatrix.com)
+## What is in this repository
 
-[Video Tutorial](https://www.youtube.com/@tikmatrix)
+| Path | Contents |
+|---|---|
+| [`sdk/python/`](sdk/python) | Python client and examples for the custom-script API — write your own automation and let TikMatrix hand you a phone |
+| `.github/workflows/` | Release build pipelines for the desktop app, the script binary, and the APK |
+| `scripts/` | Operational helpers |
 
-## Discussions
+The desktop app itself is closed source; this repository holds the parts you
+build against, plus the pipelines that produce the published binaries.
 
-[Join our Telegram](https://t.me/+iGhozoBfAbI5YmE1)
+## Custom scripts
 
-## Development
+The built-in scripts cover the common flows. When you need one they do not, you
+can write it yourself in any language and drive the phone through TikMatrix's
+local HTTP API:
 
-```shell
-npm install --global @tauri-apps/cli
-npm install --global shx
-npm install
-npm run tauri dev
-npm run tauri build
+```python
+from tikmatrix import TikMatrix
+
+client = TikMatrix()
+with client.device("192.168.1.5:5555") as d:
+    d.press("home")
+    d.wait_for(text="Settings", timeout=15)
+    d.screenshot("settings.png")
 ```
 
-## Thanks to
+Start at [`sdk/python/README.md`](sdk/python/README.md), or read the full guide
+at <https://tikmatrix.com/docs/api/custom-script>. The API is plain JSON over
+HTTP, so the Python client is a convenience, not a requirement.
 
-* <https://github.com/Genymobile/scrcpy>
+Custom scripts require a Pro plan or higher.
 
-## Donate
+## License
 
-### Paypal
-
-[paypal.me/yaohp](https://paypal.me/yaohp)
-
-### USDT-TRC20
-
-`TDe4ZmkDBPYHVqWpX6jWjf3j45JdipB7Lx`
-![ustd](src/assets/usdt.png)
+The contents of this repository — the SDK, the examples, and the workflows —
+are [MIT licensed](LICENSE), so you can copy `tikmatrix.py` into your own
+project and change it freely. The TikMatrix desktop application itself is not
+covered by this licence; it is proprietary and distributed under its own
+[terms of service](https://www.tikmatrix.com/terms-of-service).

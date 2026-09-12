@@ -1,0 +1,316 @@
+name: Build Matrix - macOS
+run-name: ${{ github.actor }} is building Matrix (macOS) 🚀
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version tag (e.g., v1.0.0)"
+        required: true
+        type: string
+      branch:
+        description: "Branch to build from"
+        required: false
+        default: "main"
+        type: string
+      build_apps:
+        description: "Apps to build"
+        required: false
+        default: "all"
+        type: string
+      notes:
+        description: "Release notes (English)"
+        required: false
+        default: ""
+        type: string
+      gray_percentage:
+        description: "Gray release percentage (0-100)"
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-tikmatrix-pro:
+    if: ${{ inputs.build_apps == 'all' || inputs.build_apps == 'tikmatrix.pro' }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/tikmatrix-pro
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.branch }}
+          path: tikmatrix-pro
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: tikmatrix-pro/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust Cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ./tikmatrix-pro/target
+            !./tikmatrix-pro/target/**/bundle/**
+          key: ${{ runner.os }}-cargo-tikmatrix-pro-v2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-tikmatrix-pro-v2-
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: tikmatrix-pro
+
+      - name: Build TikMatrix Pro package
+        run: |
+          chmod +x ./build.sh
+          ./build.sh
+        working-directory: tikmatrix-pro
+
+      - name: Compute R2 release dir
+        run: echo "R2_RELEASE_DIR=$(node ./scripts/release-paths.js --app=tikmatrix.pro)" >> $GITHUB_ENV
+        working-directory: tikmatrix-pro
+
+      - name: Upload official package to R2
+        uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID_NIO }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID_NIO }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
+          r2-bucket: matrix
+          source-dir: ./tikmatrix-pro/target/universal-apple-darwin/release/bundle/dmg
+          destination-dir: ${{ env.R2_RELEASE_DIR }}
+
+      - name: Prepare TikMatrix Pro macOS updater upload
+        run: |
+          VERSION=$(node -e "console.log(require('./tikmatrix-pro/src-tauri/tauri.conf.json').version)")
+          SRC_DIR="./tikmatrix-pro/target/universal-apple-darwin/release/bundle/macos"
+          UPLOAD_DIR="./tikmatrix-pro/target/universal-apple-darwin/release/bundle/macos-upload"
+          APP_NAME="TikMatrix Pro"
+          mkdir -p "$UPLOAD_DIR"
+          cp "$SRC_DIR/${APP_NAME}.app.tar.gz" "$UPLOAD_DIR/${APP_NAME}_${VERSION}_universal.app.tar.gz"
+          cp "$SRC_DIR/${APP_NAME}.app.tar.gz.sig" "$UPLOAD_DIR/${APP_NAME}_${VERSION}_universal.app.tar.gz.sig"
+
+      - name: Upload TikMatrix Pro macOS updater to R2
+        uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID_NIO }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID_NIO }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
+          r2-bucket: matrix
+          source-dir: ./tikmatrix-pro/target/universal-apple-darwin/release/bundle/macos-upload
+          destination-dir: ${{ env.R2_RELEASE_DIR }}
+
+      - name: Update TikMatrix Pro version (macOS)
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          cd tikmatrix-pro
+          node ./scripts/update-version.js --platform=mac --app=tikmatrix.pro "--app-name=TikMatrix Pro" "--notes=${{ inputs.notes }}" --gray-percentage=${{ inputs.gray_percentage }}
+
+      - name: Update TikMatrix Pro download url
+        env:
+          TIKMATRIX_API_KEY: ${{ secrets.TIKMATRIX_API_KEY }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          cd tikmatrix-pro
+          node ./scripts/update-download-url.js --platform=mac --distributor=OFFICIAL --app=tikmatrix.pro --app-name='TikMatrix Pro'
+
+  build-tikmatrix:
+    if: ${{ inputs.build_apps == 'all' || inputs.build_apps == 'tikmatrix' }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/tikmatrix-pro
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.branch }}
+          path: tikmatrix-pro
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: tikmatrix-pro/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust Cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ./tikmatrix-pro/target
+            !./tikmatrix-pro/target/**/bundle/**
+          key: ${{ runner.os }}-cargo-tikmatrix-v2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-tikmatrix-v2-
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: tikmatrix-pro
+
+      - name: Build TikMatrix whitelabel package
+        run: |
+          cd tikmatrix-pro
+          node ./scripts/build-whitelabel.js TikMatrix
+
+      - name: Compute R2 release dir
+        run: echo "R2_RELEASE_DIR=$(node ./scripts/release-paths.js --app=tikmatrix)" >> $GITHUB_ENV
+        working-directory: tikmatrix-pro
+
+      - name: Upload TikMatrix package to R2
+        uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID_NIO }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID_NIO }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
+          r2-bucket: matrix
+          source-dir: ./tikmatrix-pro/target/universal-apple-darwin/release/bundle/dmg
+          destination-dir: ${{ env.R2_RELEASE_DIR }}
+
+      - name: Prepare TikMatrix macOS updater upload
+        run: |
+          VERSION=$(node -e "console.log(require('./tikmatrix-pro/src-tauri/tauri.conf.json').version)")
+          SRC_DIR="./tikmatrix-pro/target/universal-apple-darwin/release/bundle/macos"
+          UPLOAD_DIR="./tikmatrix-pro/target/universal-apple-darwin/release/bundle/macos-upload"
+          APP_NAME="TikMatrix"
+          mkdir -p "$UPLOAD_DIR"
+          cp "$SRC_DIR/${APP_NAME}.app.tar.gz" "$UPLOAD_DIR/${APP_NAME}_${VERSION}_universal.app.tar.gz"
+          cp "$SRC_DIR/${APP_NAME}.app.tar.gz.sig" "$UPLOAD_DIR/${APP_NAME}_${VERSION}_universal.app.tar.gz.sig"
+
+      - name: Upload TikMatrix macOS updater to R2
+        uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID_NIO }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID_NIO }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
+          r2-bucket: matrix
+          source-dir: ./tikmatrix-pro/target/universal-apple-darwin/release/bundle/macos-upload
+          destination-dir: ${{ env.R2_RELEASE_DIR }}
+
+      - name: Update TikMatrix version (macOS)
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          cd tikmatrix-pro
+          node ./scripts/update-version.js --platform=mac --app=tikmatrix --app-name=TikMatrix "--notes=${{ inputs.notes }}" --gray-percentage=${{ inputs.gray_percentage }}
+
+      - name: Update TikMatrix download url
+        env:
+          TIKMATRIX_API_KEY: ${{ secrets.TIKMATRIX_API_KEY }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          cd tikmatrix-pro
+          node ./scripts/update-download-url.js --platform=mac --distributor=OFFICIAL --app=tikmatrix --app-name=TikMatrix
+
+  build-igmatrix:
+    if: ${{ inputs.build_apps == 'all' || inputs.build_apps == 'igmatrix' }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/tikmatrix-pro
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.branch }}
+          path: tikmatrix-pro
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: tikmatrix-pro/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust Cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ./tikmatrix-pro/target
+            !./tikmatrix-pro/target/**/bundle/**
+          key: ${{ runner.os }}-cargo-igmatrix-v2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-igmatrix-v2-
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: tikmatrix-pro
+
+      - name: Build IgMatrix whitelabel package
+        run: |
+          cd tikmatrix-pro
+          node ./scripts/build-whitelabel.js IgMatrix
+
+      - name: Compute R2 release dir
+        run: echo "R2_RELEASE_DIR=$(node ./scripts/release-paths.js --app=igmatrix)" >> $GITHUB_ENV
+        working-directory: tikmatrix-pro
+
+      - name: Upload IgMatrix package to R2
+        uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID_NIO }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID_NIO }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
+          r2-bucket: matrix
+          source-dir: ./tikmatrix-pro/target/universal-apple-darwin/release/bundle/dmg
+          destination-dir: ${{ env.R2_RELEASE_DIR }}
+
+      - name: Prepare IgMatrix macOS updater upload
+        run: |
+          VERSION=$(node -e "console.log(require('./tikmatrix-pro/src-tauri/tauri.conf.json').version)")
+          SRC_DIR="./tikmatrix-pro/target/universal-apple-darwin/release/bundle/macos"
+          UPLOAD_DIR="./tikmatrix-pro/target/universal-apple-darwin/release/bundle/macos-upload"
+          APP_NAME="IgMatrix"
+          mkdir -p "$UPLOAD_DIR"
+          cp "$SRC_DIR/${APP_NAME}.app.tar.gz" "$UPLOAD_DIR/${APP_NAME}_${VERSION}_universal.app.tar.gz"
+          cp "$SRC_DIR/${APP_NAME}.app.tar.gz.sig" "$UPLOAD_DIR/${APP_NAME}_${VERSION}_universal.app.tar.gz.sig"
+
+      - name: Upload IgMatrix macOS updater to R2
+        uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID_NIO }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID_NIO }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
+          r2-bucket: matrix
+          source-dir: ./tikmatrix-pro/target/universal-apple-darwin/release/bundle/macos-upload
+          destination-dir: ${{ env.R2_RELEASE_DIR }}
+
+      - name: Update IgMatrix version (macOS)
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          cd tikmatrix-pro
+          node ./scripts/update-version.js --platform=mac --app=igmatrix --app-name=IgMatrix "--notes=${{ inputs.notes }}" --gray-percentage=${{ inputs.gray_percentage }}
+
+      - name: Update IgMatrix download url
+        env:
+          TIKMATRIX_API_KEY: ${{ secrets.TIKMATRIX_API_KEY }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          cd tikmatrix-pro
+          node ./scripts/update-download-url.js --platform=mac --distributor=OFFICIAL --app=igmatrix --app-name=IgMatrix

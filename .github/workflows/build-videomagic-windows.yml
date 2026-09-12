@@ -1,0 +1,103 @@
+name: Build VideoMagic - Windows
+run-name: ${{ github.actor }} is building VideoMagic (Windows) 🚀
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version tag (e.g., v1.0.0)"
+        required: true
+        type: string
+      branch:
+        description: "Branch to build from"
+        required: false
+        default: "main"
+        type: string
+      notes:
+        description: "Release notes (English). Used as fallback for all languages."
+        required: false
+        default: ""
+        type: string
+      gray_percentage:
+        description: "Gray release percentage (0-100). Default 0 = roll out to 0% of devices first."
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-videomagic-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout VideoMagic repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/video-magic
+          ref: ${{ inputs.branch }}
+          path: video-magic
+          token: ${{ secrets.REPO_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: video-magic/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Rust Cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            video-magic/target
+          key: ${{ runner.os }}-cargo-videomagic-${{ hashFiles('video-magic/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-videomagic-
+
+      - name: Build VideoMagic package
+        run: |
+          cd video-magic
+          npm install
+          .\build.ps1
+
+      - name: Compute R2 release dir
+        run: |
+          $DIR = node ./scripts/release-paths.js --app=videomagic
+          echo "R2_RELEASE_DIR=$DIR" >> $env:GITHUB_ENV
+        working-directory: video-magic
+        shell: pwsh
+
+      - name: Upload VideoMagic package to R2
+        uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID_NIO }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID_NIO }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
+          r2-bucket: matrix
+          source-dir: ./video-magic/target/release/bundle/msi
+          destination-dir: ${{ env.R2_RELEASE_DIR }}
+
+      - name: Update VideoMagic version
+        env:
+          TIKMATRIX_API_KEY: ${{ secrets.TIKMATRIX_API_KEY }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          cd video-magic
+          node scripts/update-version.js --app=videomagic --app-name=VideoMagic "--notes=${{ inputs.notes }}" --gray-percentage=${{ inputs.gray_percentage }}
+
+      - name: Clear uploaded files
+        run: |
+          Remove-Item -Path .\video-magic\target\release\bundle\msi\* -Force -Recurse
+
+      - name: Update VideoMagic download url
+        env:
+          TIKMATRIX_API_KEY: ${{ secrets.TIKMATRIX_API_KEY }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          cd video-magic
+          node scripts/update-download-url.js --platform=windows --distributor=OFFICIAL --app=videomagic --app-name=VideoMagic

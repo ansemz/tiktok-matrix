@@ -1,0 +1,97 @@
+name: Deploy Admin Backend to Cloudflare Workers
+run-name: Deploy admin backend → ${{ inputs.environment }} by ${{ github.actor }} 🚀
+
+# 管理后台 = tikmatrix-pro 的 server/ 目录
+# （vue-element-admin 前端 + functions/ 下的 Cloudflare Worker 接口）
+# 仅手动触发，避免误推送直接上生产。
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "部署环境（对应 server/wrangler.jsonc 的 env）"
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+      branch:
+        description: "Branch to build from in tikmatrix-pro"
+        required: false
+        default: main
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy → ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: tikmatrix-pro/server
+
+    steps:
+      - name: Checkout tikmatrix-pro repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/tikmatrix-pro
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.branch }}
+          path: tikmatrix-pro
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      # server/package-lock.json 被 server/.gitignore 排除，仓库里没有该文件，
+      # 所以既不能用 npm ci，也不能用 setup-node 的 cache（它要 lockfile）。
+      - name: Cache npm downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.npm
+          key: npm-admin-${{ runner.os }}-${{ hashFiles('tikmatrix-pro/server/package.json') }}
+          restore-keys: |
+            npm-admin-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # vue-cli-service build + wrangler pages functions build → dist/
+      - name: Build
+        run: npm run build
+
+      - name: Deploy with Wrangler
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --env "${{ inputs.environment }}"
+
+  notify:
+    needs: [deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram notification
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          RESULTS='${{ toJson(needs) }}'
+          if echo "$RESULTS" | grep -q '"failure"'; then ICON="❌"; \
+          elif echo "$RESULTS" | grep -q '"cancelled"'; then ICON="⚠️"; \
+          else ICON="✅"; fi
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG=$(printf '%s\n%s\n%s' \
+            "${ICON} ${{ github.workflow }}" \
+            "Environment: ${{ inputs.environment }} | Branch: ${{ inputs.branch }}" \
+            "Run: ${RUN_URL}")
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${MSG}"

@@ -1,0 +1,171 @@
+name: Build Android APK (Test APK + APK) with Whitelabel
+run-name: ${{ github.actor }} is building Android APK from tikmatrix-android 🚀
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g., v1.0.0), or 'auto' to use date+sha"
+        required: false
+        default: "auto"
+        type: string
+      branch:
+        description: "Branch to build from in tikmatrix-android"
+        required: false
+        default: "main"
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        description: "Version tag (e.g., v1.0.0), or 'auto' to use date+sha"
+        required: false
+        default: "auto"
+        type: string
+      branch:
+        description: "Branch to build from"
+        required: false
+        default: "main"
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve-version.outputs.version }}
+    steps:
+      - name: Checkout tikmatrix-desktop repository (for whitelabel configs)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          path: tikmatrix-desktop
+
+      - name: Checkout tikmatrix-pro repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: tikmatrix/tikmatrix-pro
+          token: ${{ secrets.REPO_TOKEN }}
+          ref: ${{ inputs.branch }}
+          path: tikmatrix-pro
+
+      - name: Resolve version
+        id: resolve-version
+        run: |
+          if [[ "${{ inputs.version }}" == "auto" || -z "${{ inputs.version }}" ]]; then
+            VERSION="v$(date +%Y.%m.%d)-$(git -C tikmatrix-pro rev-parse --short HEAD)"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Resolved version: $VERSION"
+
+      - name: Setup Node.js (for whitelabel scripts)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: lts/*
+
+      - name: Setup Java
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Make gradlew executable
+        run: |
+          chmod +x ./gradlew || true
+        working-directory: tikmatrix-pro/android
+
+      - name: Build Official TikMatrix APKs
+        run: |
+          ./gradlew build
+          ./gradlew packageDebugAndroidTest
+          mkdir -p app/build/apk
+          mv app/build/outputs/apk/debug/app-debug.apk app/build/apk/com.github.tikmatrix.apk || true
+          mv app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk app/build/apk/com.github.tikmatrix.test.apk || true
+        working-directory: tikmatrix-pro/android
+
+      - name: Compute version directory
+        run: |
+          # Strip leading 'v' for clean R2 paths
+          VERSION="${{ steps.resolve-version.outputs.version }}"
+          echo "VERSION_DIR=${VERSION#v}" >> $GITHUB_ENV
+
+      - name: Upload APK to R2
+        uses: ryand56/r2-upload-action@b801a390acbdeb034c5e684ff5e1361c06639e7c # v1.4
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID_NIO }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID_NIO }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY_NIO }}
+          r2-bucket: matrix
+          source-dir: tikmatrix-pro/android/app/build/apk/
+          destination-dir: apk/${{ env.VERSION_DIR }}
+
+      - name: Update Library Version
+        shell: bash
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          set -e
+
+          APK_DIR="tikmatrix-pro/android/app/build/apk"
+
+          update_lib() {
+            local NAME=$1
+            local FILE=$2
+
+            local MD5=""
+            if [ -f "${APK_DIR}/${FILE}" ]; then
+              MD5=$(md5sum "${APK_DIR}/${FILE}" | cut -d' ' -f1)
+              echo "$NAME MD5: $MD5"
+            fi
+
+            local UPDATE_DATA=$(cat <<EOF
+          {
+            "name": "$NAME",
+            "platform": "generic",
+            "downloadUrl": "https://api.tikmatrix.com/front-api/release/apk/${VERSION_DIR}/${FILE}",
+            "version": "${VERSION_DIR}",
+            "app": "TikMatrix",
+            "md5": "$MD5"
+          }
+          EOF
+            )
+
+            echo "Updating $NAME library..."
+            curl -X POST \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${API_KEY}" \
+              -d "$UPDATE_DATA" \
+              "https://api.tikmatrix.com/ci/update_lib_v2"
+          }
+
+          update_lib "apk" "com.github.tikmatrix.apk"
+          update_lib "test-apk" "com.github.tikmatrix.test.apk"
+
+          echo "Updated apk/test-apk library versions to ${VERSION_DIR}"
+  notify:
+    needs: [build-apk]
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Telegram notification
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          RESULTS='${{ toJson(needs) }}'
+          if echo "$RESULTS" | grep -q '"failure"'; then ICON="❌"; \
+          elif echo "$RESULTS" | grep -q '"cancelled"'; then ICON="⚠️"; \
+          else ICON="✅"; fi
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MSG=$(printf '%s\n%s\n%s' \
+            "${ICON} ${{ github.workflow }}" \
+            "Version: ${{ needs.build-apk.outputs.version }} | Branch: ${{ inputs.branch }}" \
+            "Run: ${RUN_URL}")
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=${MSG}"
