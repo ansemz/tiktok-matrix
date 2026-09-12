@@ -10,10 +10,9 @@ on:
       environment:
         description: "部署环境（对应 server/wrangler.jsonc 的 env）"
         required: true
-        default: dev
+        default: production
         type: choice
         options:
-          - dev
           - production
       branch:
         description: "Branch to build from in tikmatrix-pro"
